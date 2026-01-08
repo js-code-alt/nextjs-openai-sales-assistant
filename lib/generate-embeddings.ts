@@ -1,4 +1,4 @@
-import { createClient } from '@supabase/supabase-js'
+import { getDbPool, closeDbPool, arrayToVectorString } from './db'
 import { createHash } from 'crypto'
 import dotenv from 'dotenv'
 import { ObjectExpression } from 'estree'
@@ -273,26 +273,18 @@ async function generateEmbeddings() {
 
   const shouldRefresh = argv.refresh
 
-  if (
-    !process.env.NEXT_PUBLIC_SUPABASE_URL ||
-    !process.env.SUPABASE_SERVICE_ROLE_KEY ||
-    !process.env.OPENAI_KEY
-  ) {
+  const dbHost = process.env.DB_HOST || process.env.MARIADB_HOST
+  const dbUser = process.env.DB_USER || process.env.MARIADB_USER
+  const dbPassword = process.env.DB_PASSWORD || process.env.MARIADB_PASSWORD
+  const dbName = process.env.DB_NAME || process.env.MARIADB_DATABASE
+
+  if (!dbHost || !dbUser || !dbPassword || !dbName || !process.env.OPENAI_KEY) {
     return console.log(
-      'Environment variables NEXT_PUBLIC_SUPABASE_URL, SUPABASE_SERVICE_ROLE_KEY, and OPENAI_KEY are required: skipping embeddings generation'
+      'Environment variables DB_HOST (or MARIADB_HOST), DB_USER (or MARIADB_USER), DB_PASSWORD (or MARIADB_PASSWORD), DB_NAME (or MARIADB_DATABASE), and OPENAI_KEY are required: skipping embeddings generation'
     )
   }
 
-  const supabaseClient = createClient(
-    process.env.NEXT_PUBLIC_SUPABASE_URL,
-    process.env.SUPABASE_SERVICE_ROLE_KEY,
-    {
-      auth: {
-        persistSession: false,
-        autoRefreshToken: false,
-      },
-    }
-  )
+  const pool = getDbPool()
 
   const embeddingSources: EmbeddingSource[] = [
     ...(await walk('pages'))
@@ -316,46 +308,45 @@ async function generateEmbeddings() {
       const { checksum, meta, sections } = await embeddingSource.load()
 
       // Check for existing page in DB and compare checksums
-      const { error: fetchPageError, data: existingPage } = await supabaseClient
-        .from('nods_page')
-        .select('id, path, checksum, parentPage:parent_page_id(id, path)')
-        .filter('path', 'eq', path)
-        .limit(1)
-        .maybeSingle()
-
-      if (fetchPageError) {
-        throw fetchPageError
-      }
-
-      type Singular<T> = T extends any[] ? undefined : T
+      const [existingPageRows] = await pool.execute(
+        'SELECT id, path, checksum, parent_page_id FROM nods_page WHERE path = ? LIMIT 1',
+        [path]
+      )
+      const existingPageRowsArray = existingPageRows as Array<{
+        id: number
+        path: string
+        checksum: string | null
+        parent_page_id: number | null
+      }>
+      const existingPage = existingPageRowsArray[0]
 
       // We use checksum to determine if this page & its sections need to be regenerated
       if (!shouldRefresh && existingPage?.checksum === checksum) {
-        const existingParentPage = existingPage?.parentPage as Singular<
-          typeof existingPage.parentPage
-        >
-
         // If parent page changed, update it
-        if (existingParentPage?.path !== parentPath) {
-          console.log(`[${path}] Parent page has changed. Updating to '${parentPath}'...`)
-          const { error: fetchParentPageError, data: parentPage } = await supabaseClient
-            .from('nods_page')
-            .select()
-            .filter('path', 'eq', parentPath)
-            .limit(1)
-            .maybeSingle()
+        if (existingPage?.parent_page_id && parentPath) {
+          const [parentPageRows] = await pool.execute(
+            'SELECT id FROM nods_page WHERE path = ? LIMIT 1',
+            [parentPath]
+          )
+          const parentPageRowsArray = parentPageRows as Array<{ id: number }>
+          const parentPage = parentPageRowsArray[0]
 
-          if (fetchParentPageError) {
-            throw fetchParentPageError
-          }
+          if (parentPage) {
+            // Check if parent actually changed
+            const [currentParentRows] = await pool.execute(
+              'SELECT id, path FROM nods_page WHERE id = ? LIMIT 1',
+              [existingPage.parent_page_id]
+            )
+            const currentParentRowsArray = currentParentRows as Array<{ id: number; path: string }>
+            const currentParent = currentParentRowsArray[0]
 
-          const { error: updatePageError } = await supabaseClient
-            .from('nods_page')
-            .update({ parent_page_id: parentPage?.id })
-            .filter('id', 'eq', existingPage.id)
-
-          if (updatePageError) {
-            throw updatePageError
+            if (currentParent?.path !== parentPath) {
+              console.log(`[${path}] Parent page has changed. Updating to '${parentPath}'...`)
+              await pool.execute(
+                'UPDATE nods_page SET parent_page_id = ? WHERE id = ?',
+                [parentPage.id, existingPage.id]
+              )
+            }
           }
         }
         continue
@@ -370,48 +361,43 @@ async function generateEmbeddings() {
           console.log(`[${path}] Refresh flag set, removing old page sections and their embeddings`)
         }
 
-        const { error: deletePageSectionError } = await supabaseClient
-          .from('nods_page_section')
-          .delete()
-          .filter('page_id', 'eq', existingPage.id)
-
-        if (deletePageSectionError) {
-          throw deletePageSectionError
-        }
+        await pool.execute('DELETE FROM nods_page_section WHERE page_id = ?', [existingPage.id])
       }
 
-      const { error: fetchParentPageError, data: parentPage } = await supabaseClient
-        .from('nods_page')
-        .select()
-        .filter('path', 'eq', parentPath)
-        .limit(1)
-        .maybeSingle()
-
-      if (fetchParentPageError) {
-        throw fetchParentPageError
+      // Get parent page if exists
+      let parentPageId: number | null = null
+      if (parentPath) {
+        const [parentPageRows] = await pool.execute(
+          'SELECT id FROM nods_page WHERE path = ? LIMIT 1',
+          [parentPath]
+        )
+        const parentPageRowsArray = parentPageRows as Array<{ id: number }>
+        const parentPage = parentPageRowsArray[0]
+        parentPageId = parentPage?.id || null
       }
 
       // Create/update page record. Intentionally clear checksum until we
       // have successfully generated all page sections.
-      const { error: upsertPageError, data: page } = await supabaseClient
-        .from('nods_page')
-        .upsert(
-          {
-            checksum: null,
-            path,
-            type,
-            source,
-            meta,
-            parent_page_id: parentPage?.id,
-          },
-          { onConflict: 'path' }
+      let pageId: number
+      if (existingPage) {
+        await pool.execute(
+          'UPDATE nods_page SET checksum = NULL, type = ?, source = ?, meta = ?, parent_page_id = ? WHERE id = ?',
+          [
+            type || null,
+            source || null,
+            meta ? JSON.stringify(meta) : null,
+            parentPageId,
+            existingPage.id,
+          ]
         )
-        .select()
-        .limit(1)
-        .single()
-
-      if (upsertPageError) {
-        throw upsertPageError
+        pageId = existingPage.id
+      } else {
+        const [insertResult] = await pool.execute(
+          'INSERT INTO nods_page (path, checksum, type, source, meta, parent_page_id) VALUES (?, NULL, ?, ?, ?, ?)',
+          [path, type || null, source || null, meta ? JSON.stringify(meta) : null, parentPageId]
+        )
+        const insertResultArray = insertResult as { insertId: number }
+        pageId = insertResultArray.insertId
       }
 
       console.log(`[${path}] Adding ${sections.length} page sections (with embeddings)`)
@@ -436,23 +422,20 @@ async function generateEmbeddings() {
 
           const [responseData] = embeddingResponse.data.data
 
-          const { error: insertPageSectionError, data: pageSection } = await supabaseClient
-            .from('nods_page_section')
-            .insert({
-              page_id: page.id,
-              slug,
-              heading,
-              content,
-              token_count: embeddingResponse.data.usage.total_tokens,
-              embedding: responseData.embedding,
-            })
-            .select()
-            .limit(1)
-            .single()
+          // Convert embedding array to MariaDB VECTOR format string
+          const embeddingVectorString = arrayToVectorString(responseData.embedding)
 
-          if (insertPageSectionError) {
-            throw insertPageSectionError
-          }
+          await pool.execute(
+            'INSERT INTO nods_page_section (page_id, slug, heading, content, token_count, embedding) VALUES (?, ?, ?, ?, ?, Vec_FromText(?))',
+            [
+              pageId,
+              slug || null,
+              heading || null,
+              content || null,
+              embeddingResponse.data.usage.total_tokens,
+              embeddingVectorString,
+            ]
+          )
         } catch (err) {
           // TODO: decide how to better handle failed embeddings
           console.error(
@@ -467,14 +450,7 @@ async function generateEmbeddings() {
       }
 
       // Set page checksum so that we know this page was stored successfully
-      const { error: updatePageError } = await supabaseClient
-        .from('nods_page')
-        .update({ checksum })
-        .filter('id', 'eq', page.id)
-
-      if (updatePageError) {
-        throw updatePageError
-      }
+      await pool.execute('UPDATE nods_page SET checksum = ? WHERE id = ?', [checksum, pageId])
     } catch (err) {
       console.error(
         `Page '${path}' or one/multiple of its page sections failed to store properly. Page has been marked with null checksum to indicate that it needs to be re-generated.`
@@ -487,7 +463,14 @@ async function generateEmbeddings() {
 }
 
 async function main() {
-  await generateEmbeddings()
+  try {
+    await generateEmbeddings()
+  } finally {
+    await closeDbPool()
+  }
 }
 
-main().catch((err) => console.error(err))
+main().catch((err) => {
+  console.error(err)
+  closeDbPool().finally(() => process.exit(1))
+})

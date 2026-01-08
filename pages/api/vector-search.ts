@@ -1,5 +1,4 @@
-import type { NextRequest } from 'next/server'
-import { createClient } from '@supabase/supabase-js'
+import type { NextApiRequest, NextApiResponse } from 'next'
 import { codeBlock, oneLine } from 'common-tags'
 import GPT3Tokenizer from 'gpt3-tokenizer'
 import {
@@ -11,33 +10,41 @@ import {
 } from 'openai-edge'
 import { OpenAIStream, StreamingTextResponse } from 'ai'
 import { ApplicationError, UserError } from '@/lib/errors'
+import { getDbPool, arrayToVectorString } from '@/lib/db'
 
 const openAiKey = process.env.OPENAI_KEY
-const supabaseUrl = process.env.NEXT_PUBLIC_SUPABASE_URL
-const supabaseServiceKey = process.env.SUPABASE_SERVICE_ROLE_KEY
 
 const config = new Configuration({
   apiKey: openAiKey,
 })
 const openai = new OpenAIApi(config)
 
-export const runtime = 'edge'
+// Note: Using Node.js runtime instead of edge runtime because mysql2 requires Node.js modules
+// export const runtime = 'edge'
 
-export default async function handler(req: NextRequest) {
+export default async function handler(req: NextApiRequest, res: NextApiResponse) {
   try {
     if (!openAiKey) {
       throw new ApplicationError('Missing environment variable OPENAI_KEY')
     }
 
-    if (!supabaseUrl) {
-      throw new ApplicationError('Missing environment variable SUPABASE_URL')
+    const dbHost = process.env.DB_HOST || process.env.MARIADB_HOST
+    const dbUser = process.env.DB_USER || process.env.MARIADB_USER
+    const dbPassword = process.env.DB_PASSWORD || process.env.MARIADB_PASSWORD
+    const dbName = process.env.DB_NAME || process.env.MARIADB_DATABASE
+
+    if (!dbHost || !dbUser || !dbPassword || !dbName) {
+      throw new ApplicationError(
+        'Missing database environment variables. Please set DB_HOST (or MARIADB_HOST), DB_USER (or MARIADB_USER), DB_PASSWORD (or MARIADB_PASSWORD), and DB_NAME (or MARIADB_DATABASE)'
+      )
     }
 
-    if (!supabaseServiceKey) {
-      throw new ApplicationError('Missing environment variable SUPABASE_SERVICE_ROLE_KEY')
+    // Handle only POST requests
+    if (req.method !== 'POST') {
+      return res.status(405).json({ error: 'Method not allowed' })
     }
 
-    const requestData = await req.json()
+    const requestData = typeof req.body === 'string' ? JSON.parse(req.body) : req.body
 
     if (!requestData) {
       throw new UserError('Missing request data')
@@ -49,7 +56,7 @@ export default async function handler(req: NextRequest) {
       throw new UserError('Missing query in request data')
     }
 
-    const supabaseClient = createClient(supabaseUrl, supabaseServiceKey)
+    const pool = getDbPool()
 
     // Moderate the content to comply with OpenAI T&C
     const sanitizedQuery = query.trim()
@@ -80,27 +87,54 @@ export default async function handler(req: NextRequest) {
       data: [{ embedding }],
     }: CreateEmbeddingResponse = await embeddingResponse.json()
 
-    const { error: matchError, data: pageSections } = await supabaseClient.rpc(
-      'match_page_sections',
-      {
-        embedding,
-        match_threshold: 0.78,
-        match_count: 10,
-        min_content_length: 50,
-      }
+    // Use MariaDB's native vector search functions
+    const matchThreshold = 0.78
+    const matchCount = 10
+    const minContentLength = 50
+
+    // Convert embedding array to MariaDB VECTOR format string
+    const embeddingVectorString = arrayToVectorString(embedding)
+
+    // Use MariaDB native vector functions for similarity search on product sections
+    // Since the index is configured with DISTANCE=cosine, VEC_DISTANCE() will use cosine distance
+    // VEC_DISTANCE returns cosine distance (lower = more similar, 0 = identical)
+    // Cosine similarity = 1 - cosine distance (for display/threshold purposes)
+    const [productSectionRows] = await pool.execute(
+      `SELECT 
+        ps.id,
+        ps.product_id,
+        ps.section_title,
+        ps.content,
+        p.name as product_name,
+        (1 - VEC_DISTANCE(ps.embedding, Vec_FromText(?))) AS similarity
+      FROM product_sections ps
+      JOIN products p ON ps.product_id = p.id
+      WHERE CHAR_LENGTH(ps.content) >= ?
+        AND (1 - VEC_DISTANCE(ps.embedding, Vec_FromText(?))) > ?
+      ORDER BY VEC_DISTANCE(ps.embedding, Vec_FromText(?)) ASC
+      LIMIT ?`,
+      [embeddingVectorString, minContentLength, embeddingVectorString, matchThreshold, embeddingVectorString, matchCount]
     )
 
-    if (matchError) {
-      throw new ApplicationError('Failed to match page sections', matchError)
-    }
+    const productSections = productSectionRows as Array<{
+      id: number
+      product_id: number
+      section_title: string | null
+      content: string | null
+      product_name: string
+      similarity: number
+    }>
 
     const tokenizer = new GPT3Tokenizer({ type: 'gpt3' })
     let tokenCount = 0
     let contextText = ''
 
-    for (let i = 0; i < pageSections.length; i++) {
-      const pageSection = pageSections[i]
-      const content = pageSection.content
+    for (let i = 0; i < productSections.length; i++) {
+      const productSection = productSections[i]
+      const content = productSection.content || ''
+      const productName = productSection.product_name || 'Product'
+      const sectionTitle = productSection.section_title || 'Section'
+      
       const encoded = tokenizer.encode(content)
       tokenCount += encoded.text.length
 
@@ -108,27 +142,34 @@ export default async function handler(req: NextRequest) {
         break
       }
 
-      contextText += `${content.trim()}\n---\n`
+      contextText += `Product: ${productName}\nSection: ${sectionTitle}\n${content.trim()}\n---\n`
     }
 
     const prompt = codeBlock`
       ${oneLine`
-        You are a very enthusiastic Supabase representative who loves
-        to help people! Given the following sections from the Supabase
-        documentation, answer the question using only that information,
-        outputted in markdown format. If you are unsure and the answer
-        is not explicitly written in the documentation, say
-        "Sorry, I don't know how to help with that."
+        You are a MariaDB Sales Assistant designed to help MariaDB sales professionals
+        position and sell MariaDB products to customers. Your role is to help salespeople
+        understand product features, benefits, use cases, and competitive positioning so they
+        can effectively communicate value to prospects and customers. When answering questions,
+        frame responses in terms of how to position products for sales conversations, customer
+        needs, and value propositions. Given the following sections from product information,
+        answer the question using only that information, outputted in markdown format.
+        Frame your responses to help with sales positioning, customer conversations, and
+        demonstrating value. If you are unsure and the answer is not explicitly written in the
+        product information, say "I don't have that information in the product database. Please
+        check the MariaDB documentation or contact the product team."
       `}
 
-      Context sections:
+      Product Information:
       ${contextText}
 
       Question: """
       ${sanitizedQuery}
       """
 
-      Answer as markdown (including related code snippets if available):
+      Important: If asked "what can you help me with?" or similar introductory questions, respond by explaining that you help MariaDB sales professionals with product positioning, understanding customer use cases, competitive advantages, and how to communicate value propositions to prospects and customers. You can help with database solutions, support offerings, consulting services, and training programs - all from a sales positioning perspective.
+
+      Answer as markdown (be helpful, accurate, and focused on helping salespeople position products effectively with customers):
     `
 
     const chatMessage: ChatCompletionRequestMessage = {
@@ -151,21 +192,36 @@ export default async function handler(req: NextRequest) {
 
     // Transform the response into a readable stream
     const stream = OpenAIStream(response)
-
-    // Return a StreamingTextResponse, which can be consumed by the client
-    return new StreamingTextResponse(stream)
+    
+    // Set headers for streaming
+    res.setHeader('Content-Type', 'text/plain; charset=utf-8')
+    res.setHeader('Transfer-Encoding', 'chunked')
+    
+    // Pipe the stream to the response
+    const reader = stream.getReader()
+    const decoder = new TextDecoder()
+    
+    try {
+      while (true) {
+        const { done, value } = await reader.read()
+        if (done) break
+        
+        const chunk = decoder.decode(value, { stream: true })
+        res.write(chunk)
+      }
+      res.end()
+    } catch (streamErr) {
+      console.error('Stream error:', streamErr)
+      res.end()
+    }
+    
+    return
   } catch (err: unknown) {
     if (err instanceof UserError) {
-      return new Response(
-        JSON.stringify({
-          error: err.message,
-          data: err.data,
-        }),
-        {
-          status: 400,
-          headers: { 'Content-Type': 'application/json' },
-        }
-      )
+      return res.status(400).json({
+        error: err.message,
+        data: err.data,
+      })
     } else if (err instanceof ApplicationError) {
       // Print out application errors with their additional data
       console.error(`${err.message}: ${JSON.stringify(err.data)}`)
@@ -175,14 +231,8 @@ export default async function handler(req: NextRequest) {
     }
 
     // TODO: include more response info in debug environments
-    return new Response(
-      JSON.stringify({
-        error: 'There was an error processing your request',
-      }),
-      {
-        status: 500,
-        headers: { 'Content-Type': 'application/json' },
-      }
-    )
+    return res.status(500).json({
+      error: 'There was an error processing your request',
+    })
   }
 }
