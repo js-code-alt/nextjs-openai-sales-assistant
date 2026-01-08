@@ -236,6 +236,18 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
           (res as any).flush()
         }
       }
+      
+      // Send sources metadata at the end
+      // Only include sections that were actually used in the context (limited by token count)
+      const usedSections = productSections.slice(0, productSections.length).map(section => ({
+        id: section.id,
+        product_name: section.product_name,
+        section_title: section.section_title,
+        similarity: Math.round(section.similarity * 100) / 100 // Round to 2 decimal places
+      }))
+      
+      // Append sources as JSON (separated by a delimiter)
+      res.write(`\n\n__SOURCES__:${JSON.stringify(usedSections)}`)
       res.end()
     } catch (streamErr) {
       console.error('Stream error:', streamErr)

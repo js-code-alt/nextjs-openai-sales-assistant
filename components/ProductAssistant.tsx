@@ -80,9 +80,56 @@ function MarkdownContent({ content }: { content: string }) {
   )
 }
 
+// Sources list component
+function SourcesList({ sources }: { 
+  sources: Array<{
+    id: number
+    product_name: string
+    section_title: string | null
+    similarity: number
+  }>
+}) {
+  if (!sources || sources.length === 0) return null
+  
+  return (
+    <div className="mt-4 pt-4 border-t border-gray-200 dark:border-gray-700">
+      <p className="text-xs font-semibold text-gray-500 dark:text-gray-400 mb-2">
+        Sources:
+      </p>
+      <div className="space-y-2">
+        {sources.map((source, idx) => (
+          <div 
+            key={source.id || idx}
+            className="text-xs text-gray-600 dark:text-gray-400 bg-gray-50 dark:bg-gray-900/50 p-2 rounded"
+          >
+            <span className="font-medium">{source.product_name}</span>
+            {source.section_title && (
+              <> - <span>{source.section_title}</span></>
+            )}
+            <span className="ml-2 text-gray-400 dark:text-gray-500">
+              ({Math.round(source.similarity * 100)}% match)
+            </span>
+          </div>
+        ))}
+      </div>
+    </div>
+  )
+}
+
+type ChatMessage = {
+  query: string
+  response: string
+  sources?: Array<{
+    id: number
+    product_name: string
+    section_title: string | null
+    similarity: number
+  }>
+}
+
 export function ProductAssistant() {
   const [query, setQuery] = React.useState<string>('')
-  const [chatHistory, setChatHistory] = React.useState<Array<{ query: string; response: string }>>([])
+  const [chatHistory, setChatHistory] = React.useState<ChatMessage[]>([])
   const [isSubmitting, setIsSubmitting] = React.useState(false)
   const [currentQuery, setCurrentQuery] = React.useState<string>('')
   const [suggestedQuestions, setSuggestedQuestions] = React.useState<string[]>([])
@@ -91,7 +138,26 @@ export function ProductAssistant() {
   const { complete, completion, isLoading, error } = useCompletion({
     api: '/api/vector-search',
     onFinish: (prompt, completion) => {
-      setChatHistory((prev) => [...prev, { query: prompt, response: completion }])
+      // Parse sources from completion
+      const sourcesMatch = completion.match(/__SOURCES__:(.+)$/s)
+      let sources = undefined
+      let cleanCompletion = completion
+      
+      if (sourcesMatch) {
+        try {
+          sources = JSON.parse(sourcesMatch[1])
+          // Remove sources marker from display
+          cleanCompletion = completion.replace(/__SOURCES__:.+$/s, '').trim()
+        } catch (e) {
+          console.error('Failed to parse sources:', e)
+        }
+      }
+      
+      setChatHistory((prev) => [...prev, { 
+        query: prompt, 
+        response: cleanCompletion,
+        sources 
+      }])
       setIsSubmitting(false)
       setCurrentQuery('')
     },
@@ -241,7 +307,10 @@ export function ProductAssistant() {
                   </span>
                   <div className="flex-1">
                     {completion && completion.trim() ? (
-                      <MarkdownContent content={completion} />
+                      <>
+                        <MarkdownContent content={completion.replace(/__SOURCES__:.+$/s, '').trim()} />
+                        {/* Sources will be shown after onFinish when the response is complete */}
+                      </>
                     ) : (
                       <TypingIndicator />
                     )}
@@ -254,6 +323,7 @@ export function ProductAssistant() {
                   </span>
                   <div className="flex-1">
                     <MarkdownContent content={item.response} />
+                    {item.sources && <SourcesList sources={item.sources} />}
                   </div>
                 </div>
               )}
