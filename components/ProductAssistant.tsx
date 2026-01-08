@@ -12,7 +12,7 @@ import {
 } from '@/components/ui/dialog'
 import { Input } from '@/components/ui/input'
 import { useCompletion } from 'ai/react'
-import { X, Loader, User, Frown, CornerDownLeft, Search, Wand } from 'lucide-react'
+import { X, Loader, User, Frown, CornerDownLeft, Search, Wand, RotateCw, Plus } from 'lucide-react'
 import ReactMarkdown from 'react-markdown'
 import remarkGfm from 'remark-gfm'
 
@@ -139,6 +139,18 @@ export function ProductAssistant() {
     complete(question)
   }
 
+  const handleRefresh = () => {
+    window.location.reload()
+  }
+
+  const handleNewChat = () => {
+    setChatHistory([])
+    setQuery('')
+    setCurrentQuery('')
+    setSuggestedQuestions([])
+    setIsSubmitting(false)
+  }
+
   const allHistory = React.useMemo(() => {
     const history = [...chatHistory]
     if (isLoading && currentQuery) {
@@ -150,10 +162,32 @@ export function ProductAssistant() {
   return (
     <div className="w-full">
       <div className="bg-white dark:bg-gray-800 rounded-lg shadow-lg p-6 min-h-[600px] flex flex-col">
-        <div className="mb-4 pb-4 border-b border-gray-200 dark:border-gray-700">
+        <div className="mb-4 pb-4 border-b border-gray-200 dark:border-gray-700 flex items-center justify-between">
           <h2 className="text-lg font-semibold text-gray-900 dark:text-white">
             Ask about Products
           </h2>
+          <div className="flex gap-2">
+            <Button
+              onClick={handleNewChat}
+              disabled={isLoading || chatHistory.length === 0}
+              variant="outline"
+              size="sm"
+              className="gap-2"
+            >
+              <Plus className="h-4 w-4" />
+              New Chat
+            </Button>
+            <Button
+              onClick={handleRefresh}
+              disabled={isLoading}
+              variant="outline"
+              size="sm"
+              className="gap-2"
+            >
+              <RotateCw className="h-4 w-4" />
+              Refresh
+            </Button>
+          </div>
         </div>
 
         <div className="flex-1 overflow-y-auto mb-4 space-y-6">
