@@ -84,7 +84,7 @@ function MarkdownContent({ content }: { content: string }) {
 function SourcesList({ sources }: { 
   sources: Array<{
     id: number
-    product_name: string
+    document_name: string
     section_title: string | null
     similarity: number
   }>
@@ -102,7 +102,7 @@ function SourcesList({ sources }: {
             key={source.id || idx}
             className="text-xs text-gray-600 dark:text-gray-400 bg-gray-50 dark:bg-gray-900/50 p-2 rounded"
           >
-            <span className="font-medium">{source.product_name}</span>
+            <span className="font-medium">{source.document_name}</span>
             {source.section_title && (
               <> - <span>{source.section_title}</span></>
             )}
@@ -121,13 +121,13 @@ type ChatMessage = {
   response: string
   sources?: Array<{
     id: number
-    product_name: string
+    document_name: string
     section_title: string | null
     similarity: number
   }>
 }
 
-export function ProductAssistant() {
+export function LegalAssistant() {
   const [query, setQuery] = React.useState<string>('')
   const [chatHistory, setChatHistory] = React.useState<ChatMessage[]>([])
   const [isSubmitting, setIsSubmitting] = React.useState(false)
@@ -136,7 +136,7 @@ export function ProductAssistant() {
   const [isLoadingSuggestions, setIsLoadingSuggestions] = React.useState(false)
 
   const { complete, completion, isLoading, error } = useCompletion({
-    api: '/api/vector-search',
+    api: '/api/legal-vector-search',
     onFinish: (prompt, completion) => {
       // Parse sources from completion
       const sourcesMatch = completion.match(/__SOURCES__:(.+)$/s)
@@ -167,13 +167,13 @@ export function ProductAssistant() {
   React.useEffect(() => {
     if (chatHistory.length === 0 && !isLoading && !isLoadingSuggestions) {
       setIsLoadingSuggestions(true)
-      fetch('/api/suggested-questions?type=product')
+      fetch('/api/suggested-questions?type=legal')
         .then((res) => res.json())
         .then((data) => {
           if (data.questions && Array.isArray(data.questions) && data.questions.length > 0) {
             setSuggestedQuestions(data.questions)
           } else {
-            // No products uploaded, set empty array to show message
+            // No legal documents uploaded, set empty array to show message
             setSuggestedQuestions([])
           }
         })
@@ -234,7 +234,7 @@ export function ProductAssistant() {
       <div className="bg-white dark:bg-gray-800 rounded-lg shadow-lg p-6 min-h-[600px] flex flex-col">
         <div className="mb-4 pb-4 border-b border-gray-200 dark:border-gray-700 flex items-center justify-between">
           <h2 className="text-lg font-semibold text-gray-900 dark:text-white">
-            Ask about Products
+            Ask about Legal Documents
           </h2>
           <div className="flex gap-2">
             <Button
@@ -264,13 +264,13 @@ export function ProductAssistant() {
           {allHistory.length === 0 && !isLoading && (
             <div className="text-center text-gray-500 dark:text-gray-400 py-8">
               <Search className="mx-auto h-12 w-12 mb-4 opacity-50" />
-              <p className="mb-6">Start by asking a question about MariaDB products...</p>
+              <p className="mb-6">Start by asking a question about legal documents...</p>
               
-              {/* Show message if no products uploaded */}
+              {/* Show message if no legal documents uploaded */}
               {!isLoadingSuggestions && suggestedQuestions.length === 0 && (
                 <div className="max-w-3xl mx-auto mt-4">
                   <p className="text-sm text-gray-400 dark:text-gray-500">
-                    Upload products in Settings to generate suggested questions
+                    Upload legal documents in Settings to generate suggested questions
                   </p>
                 </div>
               )}
@@ -358,7 +358,7 @@ export function ProductAssistant() {
         <form onSubmit={handleSubmit} className="mt-auto">
           <div className="relative">
             <Input
-              placeholder="Ask a question about MariaDB products..."
+              placeholder="Ask a question about legal documents..."
               name="search"
               value={query}
               onChange={(e) => setQuery(e.target.value)}
