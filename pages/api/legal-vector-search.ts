@@ -124,7 +124,7 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
     )
 
     // Check if query is about licensing/compliance - if so, also do keyword search
-    const isLicensingQuery = /(license|licensed|unlicensed|node|server|core|vCPU|violat|complian|over.?usage|exceed)/i.test(sanitizedQuery)
+    const isLicensingQuery = /(license|licensed|unlicensed|node|server|core|vCPU|violat|complian|over.?usage|exceed|community|enterprise|production|environment|use|using)/i.test(sanitizedQuery)
     
     let keywordBoostedSections: Array<{
       id: number
@@ -137,7 +137,24 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
 
     if (isLicensingQuery) {
       // Also search for sections with licensing keywords that might have been missed
-      const licensingKeywords = ['must be licensed', 'licensed and subscribed', 'all Servers', 'all Cores', 'all vCPUs', 'all environments', 'production, test, development', 'reporting', 'notify', 'over-usage', 'exceeding quantity']
+      const licensingKeywords = [
+        'must be licensed', 
+        'licensed and subscribed', 
+        'all Servers', 
+        'all Cores', 
+        'all vCPUs', 
+        'all environments', 
+        'production, test, development', 
+        'production',
+        'Scope',
+        'Scope of Services',
+        'reporting', 
+        'notify', 
+        'over-usage', 
+        'exceeding quantity',
+        'use with the Software',
+        'must be licensed and subscribed'
+      ]
       
       const keywordConditions = licensingKeywords.map(() => '(ls.content LIKE ? OR ls.section_title LIKE ?)').join(' OR ')
       const keywordParams = licensingKeywords.flatMap(kw => [`%${kw}%`, `%${kw}%`])
@@ -277,9 +294,10 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
       ` : `
       - Answer based on the information provided in the legal documents above. The sections provided have been identified as relevant to your question.
       - CRITICAL: Review ALL sections provided and identify which sections MOST DIRECTLY answer the question. Look for sections that contain keywords and phrases from the question. For example:
-        * If the question mentions "nodes", "servers", "licensing", "not under license", "unlicensed" → Look for sections about licensing requirements, "must be licensed", "all Servers", "Scope", "licensing requirements"
+        * If the question mentions "nodes", "servers", "licensing", "not under license", "unlicensed", "Community", "Enterprise", "use", "using", "production" → Look for sections about licensing requirements, "must be licensed", "all Servers", "Scope", "Scope of Services", "licensing requirements", "use with the Software"
         * If the question mentions "violating", "compliance", "over-usage" → Look for sections about requirements, restrictions, reporting obligations, penalties
-        * If the question mentions "production", "environment" → Look for sections that specify "all environments", "production, test, development"
+        * If the question mentions "production", "environment", "enterprise environment" → Look for sections that specify "all environments", "production, test, development", "Scope of Services"
+        * Questions about "can a client use" or "is it allowed" → Look for sections about Scope, licensing requirements, restrictions, what is permitted
       - IMPORTANT: The sections above are relevant to the question. Analyze ALL of them carefully, identify the MOST directly relevant ones, and provide a comprehensive answer based on what the documents say.
       - ALWAYS cite ALL directly relevant sections - not just 1-3, but ALL sections that directly answer the specific question. Do not limit citations if multiple sections are relevant.
       - ALWAYS provide direct quotes from ALL relevant sections when answering questions about compliance, licensing, terms, conditions, or specific clauses.
