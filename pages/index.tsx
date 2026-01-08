@@ -12,7 +12,7 @@ export default function Home() {
   return (
     <>
       <Head>
-        <title>MariaDB Sales Assistant</title>
+        <title>Ai Sales Assistant</title>
         <meta
           name="description"
           content="AI Sales Assistant for MariaDB products powered by OpenAI and MariaDB Cloud with vector capabilities."

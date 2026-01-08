@@ -20,7 +20,7 @@ export default function ProductPage() {
           </h1>
           <p className="text-gray-600 dark:text-gray-400">
             Ask questions about MariaDB products and services. The AI assistant will help you find
-            information using vector search.
+            information you need to sell MariaDB products to your customers.
           </p>
         </div>
         <ProductAssistant />
