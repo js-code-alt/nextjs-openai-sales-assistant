@@ -60,9 +60,15 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
 
     // Moderate the content to comply with OpenAI T&C
     const sanitizedQuery = query.trim()
-    const moderationResponse: CreateModerationResponse = await openai
-      .createModeration({ input: sanitizedQuery })
-      .then((res) => res.json())
+    
+    // Run moderation and embedding generation in parallel for better performance
+    const [moderationResponse, embeddingResponse] = await Promise.all([
+      openai.createModeration({ input: sanitizedQuery }).then((res) => res.json()),
+      openai.createEmbedding({
+        model: 'text-embedding-ada-002',
+        input: sanitizedQuery.replaceAll('\n', ' '),
+      }),
+    ])
 
     const [results] = moderationResponse.results
 
@@ -72,12 +78,6 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
         categories: results.categories,
       })
     }
-
-    // Create embedding from query
-    const embeddingResponse = await openai.createEmbedding({
-      model: 'text-embedding-ada-002',
-      input: sanitizedQuery.replaceAll('\n', ' '),
-    })
 
     if (embeddingResponse.status !== 200) {
       throw new ApplicationError('Failed to create embedding for question', embeddingResponse)
@@ -96,24 +96,29 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
     const embeddingVectorString = arrayToVectorString(embedding)
 
     // Use MariaDB native vector functions for similarity search on product sections
+    // Optimized query: Use CTE to compute Vec_FromText once and reuse it
     // Since the index is configured with DISTANCE=cosine, VEC_DISTANCE() will use cosine distance
     // VEC_DISTANCE returns cosine distance (lower = more similar, 0 = identical)
     // Cosine similarity = 1 - cosine distance (for display/threshold purposes)
     const [productSectionRows] = await pool.execute(
-      `SELECT 
+      `WITH query_vector AS (
+        SELECT Vec_FromText(?) AS vec
+      )
+      SELECT 
         ps.id,
         ps.product_id,
         ps.section_title,
         ps.content,
         p.name as product_name,
-        (1 - VEC_DISTANCE(ps.embedding, Vec_FromText(?))) AS similarity
+        (1 - VEC_DISTANCE(ps.embedding, qv.vec)) AS similarity
       FROM product_sections ps
       JOIN products p ON ps.product_id = p.id
+      CROSS JOIN query_vector qv
       WHERE CHAR_LENGTH(ps.content) >= ?
-        AND (1 - VEC_DISTANCE(ps.embedding, Vec_FromText(?))) > ?
-      ORDER BY VEC_DISTANCE(ps.embedding, Vec_FromText(?)) ASC
+        AND (1 - VEC_DISTANCE(ps.embedding, qv.vec)) > ?
+      ORDER BY VEC_DISTANCE(ps.embedding, qv.vec) ASC
       LIMIT ?`,
-      [embeddingVectorString, minContentLength, embeddingVectorString, matchThreshold, embeddingVectorString, matchCount]
+      [embeddingVectorString, minContentLength, matchThreshold, matchCount]
     )
 
     const productSections = productSectionRows as Array<{
@@ -147,15 +152,28 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
 
     const prompt = codeBlock`
       ${oneLine`
-        You are a MariaDB Sales Assistant designed to help MariaDB sales professionals
-        position and sell MariaDB products to customers. Your role is to help salespeople
-        understand product features, benefits, use cases, and competitive positioning so they
-        can effectively communicate value to prospects and customers. When answering questions,
-        frame responses in terms of how to position products for sales conversations, customer
-        needs, and value propositions. Given the following sections from product information,
-        answer the question using only that information, outputted in markdown format.
-        Frame your responses to help with sales positioning, customer conversations, and
-        demonstrating value. If you are unsure and the answer is not explicitly written in the
+        You are the MariaDB Sales Assistant - an AI assistant designed to help MariaDB sales
+        professionals position and sell MariaDB products to customers. The user asking questions
+        is a MariaDB sales professional who needs your help with sales conversations, positioning,
+        and communicating value to prospects and customers (like CTOs, IT directors, etc.).
+        
+        Your role is to provide sales guidance, talking points, and positioning advice based on
+        the product information. When answering questions, frame your responses as sales advice
+        for the salesperson - tell them HOW to explain things to their customers, what talking
+        points to use, how to position features as benefits, and how to address customer concerns.
+        
+        DO NOT explain MariaDB products to the salesperson as if they are a customer. Instead,
+        help them sell by providing:
+        - Sales talking points and value propositions
+        - How to position features for different customer personas (CTOs, developers, etc.)
+        - Answers to common customer objections
+        - Competitive positioning and differentiation
+        - Use cases and customer success stories
+        - How to structure sales conversations and calls
+        
+        Given the following sections from product information, answer the question using only
+        that information, outputted in markdown format. Frame your responses as sales guidance
+        for the salesperson. If you are unsure and the answer is not explicitly written in the
         product information, say "I don't have that information in the product database. Please
         check the MariaDB documentation or contact the product team."
       `}
@@ -167,9 +185,12 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
       ${sanitizedQuery}
       """
 
-      Important: If asked "what can you help me with?" or similar introductory questions, respond by explaining that you help MariaDB sales professionals with product positioning, understanding customer use cases, competitive advantages, and how to communicate value propositions to prospects and customers. You can help with database solutions, support offerings, consulting services, and training programs - all from a sales positioning perspective.
+      Important: 
+      - Remember - the user is a MariaDB sales professional. Provide them with sales guidance, talking points, and positioning advice to help them sell to their customers. Frame responses as "here's how you can explain/position this to your customer" or "here's a plan/approach for your sales call" rather than explaining products to the salesperson.
+      
+      - If asked "how can you help", "what can you help with", "how can i help", or similar introductory questions, respond by introducing yourself: "I'm the MariaDB Sales Assistant. I can help you with product questions, positioning products for sales conversations, help with prospecting, and general MariaDB questions. I'm here to support you in your sales efforts by providing talking points, value propositions, competitive positioning, and guidance on how to effectively communicate with prospects and customers."
 
-      Answer as markdown (be helpful, accurate, and focused on helping salespeople position products effectively with customers):
+      Answer as markdown (be helpful, accurate, and focused on providing actionable sales guidance):
     `
 
     const chatMessage: ChatCompletionRequestMessage = {
@@ -193,11 +214,13 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
     // Transform the response into a readable stream
     const stream = OpenAIStream(response)
     
-    // Set headers for streaming
+    // Set headers for streaming text that useCompletion expects
     res.setHeader('Content-Type', 'text/plain; charset=utf-8')
-    res.setHeader('Transfer-Encoding', 'chunked')
+    res.setHeader('Cache-Control', 'no-cache')
+    res.setHeader('Connection', 'keep-alive')
     
-    // Pipe the stream to the response
+    // Pipe the stream directly to the response
+    // OpenAIStream already formats the chunks correctly for useCompletion
     const reader = stream.getReader()
     const decoder = new TextDecoder()
     
@@ -208,6 +231,10 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
         
         const chunk = decoder.decode(value, { stream: true })
         res.write(chunk)
+        // Flush the response to ensure chunks are sent immediately
+        if (typeof (res as any).flush === 'function') {
+          (res as any).flush()
+        }
       }
       res.end()
     } catch (streamErr) {

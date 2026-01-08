@@ -26,10 +26,15 @@ export function getDbPool(): mysql.Pool {
     password,
     database,
     waitForConnections: true,
-    connectionLimit: 10,
+    connectionLimit: 20, // Increased for better concurrency
     queueLimit: 0,
     enableKeepAlive: true,
     keepAliveInitialDelay: 0,
+    // Performance optimizations
+    multipleStatements: false, // Security: prevent SQL injection via multiple statements
+    // Connection timeout settings
+    connectTimeout: 10000, // 10 seconds
+    // SSL configuration
     ssl: {
       rejectUnauthorized: false,
     },

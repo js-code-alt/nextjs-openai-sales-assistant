@@ -84,31 +84,68 @@ export function ProductAssistant() {
   const [query, setQuery] = React.useState<string>('')
   const [chatHistory, setChatHistory] = React.useState<Array<{ query: string; response: string }>>([])
   const [isSubmitting, setIsSubmitting] = React.useState(false)
+  const [currentQuery, setCurrentQuery] = React.useState<string>('')
+  const [suggestedQuestions, setSuggestedQuestions] = React.useState<string[]>([])
+  const [isLoadingSuggestions, setIsLoadingSuggestions] = React.useState(false)
 
   const { complete, completion, isLoading, error } = useCompletion({
     api: '/api/vector-search',
     onFinish: (prompt, completion) => {
       setChatHistory((prev) => [...prev, { query: prompt, response: completion }])
       setIsSubmitting(false)
+      setCurrentQuery('')
     },
   })
+
+  // Fetch suggested questions when component mounts and there's no chat history
+  React.useEffect(() => {
+    if (chatHistory.length === 0 && !isLoading && !isLoadingSuggestions) {
+      setIsLoadingSuggestions(true)
+      fetch('/api/suggested-questions')
+        .then((res) => res.json())
+        .then((data) => {
+          if (data.questions && Array.isArray(data.questions)) {
+            setSuggestedQuestions(data.questions)
+          }
+        })
+        .catch((err) => {
+          console.error('Failed to fetch suggested questions:', err)
+        })
+        .finally(() => {
+          setIsLoadingSuggestions(false)
+        })
+    }
+  }, [chatHistory.length, isLoading])
 
   const handleSubmit: React.FormEventHandler<HTMLFormElement> = (e) => {
     e.preventDefault()
     if (!query.trim() || isLoading) return
     
+    const queryToSubmit = query.trim()
     setIsSubmitting(true)
+    setCurrentQuery(queryToSubmit)
     setQuery('')
-    complete(query)
+    setSuggestedQuestions([]) // Hide suggestions once user starts chatting
+    complete(queryToSubmit)
+  }
+
+  const handleSuggestedQuestionClick = (question: string) => {
+    if (isLoading) return
+    
+    setIsSubmitting(true)
+    setCurrentQuery(question)
+    setQuery('')
+    setSuggestedQuestions([]) // Hide suggestions
+    complete(question)
   }
 
   const allHistory = React.useMemo(() => {
     const history = [...chatHistory]
-    if (isLoading && query) {
-      history.push({ query: query, response: completion || '...' })
+    if (isLoading && currentQuery) {
+      history.push({ query: currentQuery, response: completion || '' })
     }
     return history
-  }, [chatHistory, isLoading, query, completion])
+  }, [chatHistory, isLoading, currentQuery, completion])
 
   return (
     <div className="w-full">
@@ -121,9 +158,34 @@ export function ProductAssistant() {
 
         <div className="flex-1 overflow-y-auto mb-4 space-y-6">
           {allHistory.length === 0 && !isLoading && (
-            <div className="text-center text-gray-500 dark:text-gray-400 py-12">
+            <div className="text-center text-gray-500 dark:text-gray-400 py-8">
               <Search className="mx-auto h-12 w-12 mb-4 opacity-50" />
-              <p>Start by asking a question about MariaDB products...</p>
+              <p className="mb-6">Start by asking a question about MariaDB products...</p>
+              
+              {/* Suggested Questions */}
+              {suggestedQuestions.length > 0 && (
+                <div className="max-w-3xl mx-auto">
+                  <p className="text-sm text-gray-400 dark:text-gray-500 mb-3">Suggested questions:</p>
+                  <div className="flex flex-wrap gap-2 justify-center">
+                    {suggestedQuestions.map((question, index) => (
+                      <button
+                        key={index}
+                        onClick={() => handleSuggestedQuestionClick(question)}
+                        disabled={isLoading}
+                        className="px-4 py-2 text-sm bg-gray-100 dark:bg-gray-700 hover:bg-gray-200 dark:hover:bg-gray-600 text-gray-700 dark:text-gray-300 rounded-full transition-colors duration-200 border border-gray-200 dark:border-gray-600 hover:border-gray-300 dark:hover:border-gray-500 disabled:opacity-50 disabled:cursor-not-allowed"
+                      >
+                        {question}
+                      </button>
+                    ))}
+                  </div>
+                </div>
+              )}
+              
+              {isLoadingSuggestions && (
+                <div className="mt-4">
+                  <Loader className="mx-auto h-5 w-5 animate-spin text-gray-400" />
+                </div>
+              )}
             </div>
           )}
 
