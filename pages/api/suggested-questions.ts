@@ -25,19 +25,22 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
 
     // Handle legal documents
     if (type === 'legal') {
+      // Get document names, section titles, AND sample content to verify questions are answerable
       const [legalRows] = await pool.execute(
         `SELECT DISTINCT 
           ld.name as document_name,
-          ls.section_title
+          ls.section_title,
+          LEFT(ls.content, 200) as content_sample
         FROM legal_documents ld
         JOIN legal_sections ls ON ld.id = ls.legal_id
-        ORDER BY ld.created_at DESC
-        LIMIT 50`
+        ORDER BY ld.created_at DESC, ls.id
+        LIMIT 100`
       )
 
       const legalDocs = legalRows as Array<{
         document_name: string
         section_title: string | null
+        content_sample: string | null
       }>
 
       if (legalDocs.length === 0) {
@@ -54,13 +57,35 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
         new Set(legalDocs.map((d) => d.section_title).filter((title): title is string => title !== null))
       ).slice(0, 20)
 
-      // Create a summary of available data
+      // Group content samples by document to understand what topics are actually covered
+      const documentContentMap = new Map<string, string[]>()
+      legalDocs.forEach((doc) => {
+        if (!documentContentMap.has(doc.document_name)) {
+          documentContentMap.set(doc.document_name, [])
+        }
+        if (doc.content_sample) {
+          documentContentMap.get(doc.document_name)!.push(doc.content_sample)
+        }
+      })
+
+      // Create a summary of available data with content samples
+      const contentSamples = Array.from(documentContentMap.entries())
+        .slice(0, 10)
+        .map(([name, samples]) => {
+          const combinedSample = samples.slice(0, 3).join(' ').substring(0, 300)
+          return `- ${name}: ${combinedSample}...`
+        })
+        .join('\n')
+
       const dataSummary = `
 Legal documents available:
 ${documentNames.map((name) => `- ${name}`).join('\n')}
 
 Sample topics/sections:
 ${sectionTitles.slice(0, 15).map((title) => `- ${title}`).join('\n')}
+
+Sample content from documents (to verify questions are answerable):
+${contentSamples}
 `
 
       // Use OpenAI to generate relevant, specific questions based on the legal data
@@ -70,17 +95,18 @@ The assistant helps users find information from legal documents.
 Based on the following legal documents that have been uploaded, generate 4-6 specific, actionable questions that a user might ask about legal documents. 
 The questions should:
 1. Be specific to the legal documents and topics that are ACTUALLY AVAILABLE (only use document names and section titles that are listed)
-2. Be answerable based on the document names and section titles provided - do not create hypothetical questions
-3. Help users understand legal terms, clauses, or requirements that are likely covered in the documents
+2. Be answerable based on the ACTUAL CONTENT SAMPLES provided - only suggest questions if the content samples show that information exists
+3. Help users understand legal terms, clauses, or requirements that are clearly covered in the documents
 4. Reference specific documents by name when relevant (use the exact document names from the list)
 5. Be concise (one sentence each)
-6. Focus on questions that can be answered with general information - avoid highly specific details that may not be in the documents
-7. When a document name suggests a topic (e.g., "MaxScale 25.01", "BSL License"), ask general questions about that topic, not about specific changes or updates unless the section titles clearly indicate that information
+6. Focus on questions that can be answered with general information that is clearly present in the content samples
+7. AVOID questions about specific updates, changes, or reasons unless the content samples explicitly mention those details
+8. Prefer general questions like "What is [topic]?" or "What are the key terms in [document]?" over specific questions like "Why was [X] updated?" unless the content clearly explains the reason
 
 Legal document data available:
 ${dataSummary}
 
-IMPORTANT: Only generate questions about documents and topics that are clearly present in the list above. Do not create questions about hypothetical or assumed content. Focus on general understanding questions rather than specific details.
+CRITICAL: Only generate questions that you can verify are answerable based on the content samples provided. If a document name suggests a topic but the content samples don't show relevant information, do NOT generate questions about that topic. Focus on questions that are clearly answerable from the content shown.
 
 Generate 4-6 questions as a JSON array of strings. Return ONLY the JSON array, no other text.
 Example format: ["Question 1?", "Question 2?", "Question 3?"]`

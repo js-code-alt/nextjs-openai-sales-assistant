@@ -184,6 +184,12 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
     // Check if query is about licensing/compliance - if so, also do keyword search
     const isLicensingQuery = /(license|licensed|unlicensed|node|server|core|vCPU|violat|complian|over.?usage|exceed|community|enterprise|production|environment|use|using)/i.test(sanitizedQuery)
     
+    // Check if query is about reporting/notification obligations
+    const isReportingObligationQuery = /(obliged|obligation|must tell|must notify|must report|required to tell|required to notify|required to report|should tell|should notify|should report|tell.*about|notify.*about|report.*about|inform.*about|disclose|extra node|additional node|unlicensed node|node.*not.*license)/i.test(sanitizedQuery)
+    
+    // Check if query is asking how to inform/communicate with clients
+    const isHowToInformQuery = /(how.*inform|how.*tell|how.*communicate|how.*email|how.*discuss|how.*advise|how.*explain|advise.*how|suggest.*email|email.*template|how.*write)/i.test(sanitizedQuery)
+    
     let keywordBoostedSections: Array<{
       id: number
       legal_id: number
@@ -193,7 +199,7 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
       similarity: number
     }> = []
 
-    if (isLicensingQuery) {
+    if (isLicensingQuery || isReportingObligationQuery || isHowToInformQuery) {
       // Also search for sections with licensing keywords that might have been missed
       const licensingKeywords = [
         'must be licensed', 
@@ -206,16 +212,40 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
         'production',
         'Scope',
         'Scope of Services',
-        'reporting', 
-        'notify', 
-        'over-usage', 
-        'exceeding quantity',
         'use with the Software',
         'must be licensed and subscribed'
       ]
       
-      const keywordConditions = licensingKeywords.map(() => '(ls.content LIKE ? OR ls.section_title LIKE ?)').join(' OR ')
-      const keywordParams = licensingKeywords.flatMap(kw => [`%${kw}%`, `%${kw}%`])
+      // Keywords specifically for reporting/notification obligations
+      const reportingKeywords = [
+        'promptly notify',
+        'must notify',
+        'must promptly notify',
+        'reporting',
+        'notify',
+        'over-usage',
+        'exceeding quantity',
+        'usage exceeds',
+        'exceeds the quantity',
+        'exceeds the quantity of licensed',
+        'exceeds the scope',
+        'Section 4',
+        'Section 4.4',
+        'Fees and Payments',
+        'usage reports',
+        'must promptly notify MariaDB'
+      ]
+      
+      // Combine keywords based on query type
+      // For "how to inform" questions, prioritize both licensing and reporting keywords since they need to reference both
+      const allKeywords = isHowToInformQuery
+        ? [...reportingKeywords, ...licensingKeywords] // Include both for communication guidance
+        : isReportingObligationQuery 
+          ? [...reportingKeywords, ...licensingKeywords]
+          : [...licensingKeywords, ...reportingKeywords]
+      
+      const keywordConditions = allKeywords.map(() => '(ls.content LIKE ? OR ls.section_title LIKE ?)').join(' OR ')
+      const keywordParams = allKeywords.flatMap(kw => [`%${kw}%`, `%${kw}%`])
       
       const [keywordRows] = await pool.execute(
         `SELECT 
@@ -322,9 +352,12 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
       
       CRITICAL: These sections contain information that can answer the question. Sections with very high similarity scores (90%+, especially 100%) are HIGHLY RELEVANT and you MUST extract and use information from them to answer the question. Do not say "I don't have that information" if these sections are provided - they ARE the information.
       
+      **ABSOLUTE REQUIREMENT**: If you see ANY section with 100% similarity/relevance score, that section contains DIRECTLY RELEVANT information that answers the question. You MUST read and extract information from ALL 100% match sections. Do NOT ignore them or say the information is not available.
+      
       CRITICAL INSTRUCTIONS FOR FINDING RELEVANT SECTIONS:
       1. **RELEVANCE SCORES (CRITICAL)**: Each section below includes a relevance score (percentage). Sections with 90%+ relevance (especially 100%) are HIGHLY RELEVANT and you MUST extract information from them to answer the question. These sections were identified as directly relevant to your question.
-      2. Review ALL sections below - do not just look at the first few. Scan through ALL of them, but prioritize sections with higher relevance scores.
+      2. **100% MATCH SECTIONS ARE MANDATORY**: If ANY section has a 100% match score, it means the vector search found EXACT semantic matches. You MUST read these sections completely and extract ALL relevant information from them. These sections directly answer the question.
+      3. Review ALL sections below - do not just look at the first few. Scan through ALL of them, but prioritize sections with higher relevance scores.
       3. **DOCUMENT NAME MATCHING (CRITICAL)**: If the question mentions a specific document type or name (e.g., "BSL", "Business Source License", "Subscription Agreement", "MaxScale", "Privacy Policy", "Terms of Service"), you MUST prioritize sections from documents whose names match that topic. For example:
          - Questions about "BSL" or "Business Source License" should prioritize sections from documents named "BSL License", "Business Source License", etc.
          - Questions about "Subscription Agreement" should prioritize sections from documents named "Subscription Agreement" or "MariaDB Subscription Agreement"
@@ -358,12 +391,15 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
         * If asked about "MaxScale", cite sections from MaxScale-related documents
       - CRITICAL: Review ALL sections provided and identify which sections MOST DIRECTLY answer the question. Look for sections that contain keywords and phrases from the question. For example:
         * If the question mentions "nodes", "servers", "licensing", "not under license", "unlicensed", "Community", "Enterprise", "use", "using", "production" → Look for sections about licensing requirements, "must be licensed", "all Servers", "Scope", "Scope of Services", "licensing requirements", "use with the Software"
-        * If the question mentions "violating", "compliance", "over-usage" → Look for sections about requirements, restrictions, reporting obligations, penalties
+        * **CRITICAL FOR REPORTING OBLIGATIONS**: If the question mentions "obliged", "obligation", "must tell", "must notify", "must report", "required to tell/notify/report", "should tell/notify/report", "extra node", "additional node", "unlicensed node", or asks whether they need to inform/report about nodes or exceeding licensed quantities → You MUST find and cite Section 4.4 (Reporting) as the PRIMARY answer. Section 4.4 states: "The Customer must promptly notify MariaDB if the Customer's usage exceeds the quantity of licensed Products or scope of purchased Services specified in the Order Form. The Customer must also provide MariaDB with usage reports upon request." This is the section that directly answers questions about reporting obligations.
+        * **CRITICAL FOR "HOW TO INFORM" QUESTIONS**: If the question asks "how can I inform/tell/communicate/email" the client about a compliance issue (especially regarding unlicensed nodes, licensing violations, or exceeding licensed quantities), you MUST reference both Section 2.1 (for licensing requirements) and Section 4.4 (for reporting obligations). Structure your guidance to: (1) Explain the issue clearly, (2) Cite Section 2.1 with the quote about all Servers/Cores/vCPUs must be licensed, (3) Cite Section 4.4 with the quote about reporting obligations, (4) Provide practical email/talking point suggestions that reference these specific sections.
+        * If the question mentions "violating", "compliance", "over-usage" → Look for sections about requirements, restrictions, reporting obligations, penalties, and specifically Section 4.4 for reporting requirements
         * If the question mentions "production", "environment", "enterprise environment" → Look for sections that specify "all environments", "production, test, development", "Scope of Services"
         * Questions about "can a client use" or "is it allowed" → Look for sections about Scope, licensing requirements, restrictions, what is permitted
       - IMPORTANT: The sections above are relevant to the question. Analyze ALL of them carefully, identify the MOST directly relevant ones, and provide a comprehensive answer based on what the documents say.
+      - **STRUCTURE YOUR ANSWER CLEARLY**: Provide a single, well-structured answer without repeating the same information. State your conclusion first, then cite the relevant section(s) with quotes, and provide a brief summary. Do NOT repeat the same point multiple times in different paragraphs.
       - ALWAYS cite ALL directly relevant sections - not just 1-3, but ALL sections that directly answer the specific question. Do not limit citations if multiple sections are relevant.
-      - ALWAYS provide direct quotes from ALL relevant sections when answering questions about compliance, licensing, terms, conditions, or specific clauses.
+      - ALWAYS provide direct quotes from ALL relevant sections when answering questions about compliance, licensing, terms, conditions, or specific clauses. However, cite each section only once - do not repeat the same quote or citation multiple times.
       - ALWAYS cite the specific section number/title and document name when providing answers. Use formats like:
         * "According to Section [section number/title] in [Document Name]: '[exact quote]'"
         * "As stated in [Document Name], Section [section number/title]: '[exact quote]'"
@@ -371,20 +407,29 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
       - When quoting, use quotation marks and be precise - copy the exact text from the document word-for-word.
       - For licensing/compliance questions, you MUST find and cite sections containing these EXACT phrases: "must be licensed", "licensed and subscribed", "all Servers", "all Cores", "all vCPUs", "all environments", "production, test, development, disaster recovery". These are typically in Section 2.x (Scope).
       - For questions about over-usage or exceeding licensed quantities, you MUST find and cite sections containing: "reporting", "notify", "over-usage", "exceeding quantity", "promptly notify". These are typically in Section 4.x (Fees and Payments).
+      - **MANDATORY FOR REPORTING OBLIGATION QUESTIONS**: For questions about reporting obligations, notification requirements, or whether customers must tell/notify about extra nodes, additional nodes, unlicensed nodes, or exceeding licensed quantities (e.g., "are they obliged to tell", "must they notify", "required to report", "are they obliged to tell me there is an extra node"), you MUST find and cite Section 4.4 (Reporting) as the PRIMARY answer. Section 4.4 states: "The Customer must promptly notify MariaDB if the Customer's usage exceeds the quantity of licensed Products or scope of purchased Services specified in the Order Form. The Customer must also provide MariaDB with usage reports upon request." This section directly answers whether customers are obliged to report extra nodes or exceeding licensed quantities. You may also cite Section 2.1 for context about licensing requirements, but Section 4.4 is the section that answers the reporting obligation question.
       - If you see sections with these keywords, they are REQUIRED citations - do not skip them even if they appear later in the list.
       - Do NOT cite sections that are tangentially related or generic boilerplate like "Entire Agreement", "Non-Solicitation", "Force Majeure", "Assignment", "Notices", etc. unless they specifically relate to the question.
       - If the question is about compliance or whether something violates terms, identify ALL relevant sections that address the specific issue, analyze them comprehensively, and cite each one with quotes. Provide a complete answer covering all relevant requirements.
-      - For questions asking "how to" or "what should I do" or "how can I tell/explain", provide practical guidance based on the legal requirements in the documents. For example:
-        * If asked "how can I tell the customer about this?" in the context of a compliance issue, reference relevant sections (like reporting requirements, notification obligations) and provide guidance on what the customer needs to know based on those sections.
-        * If asked "what should the customer do?", reference the requirements and obligations stated in the relevant sections.
+      - For questions asking "how to" or "what should I do" or "how can I tell/explain" or "how can I inform/communicate" or "how can I advise", provide practical, actionable guidance based on the legal requirements in the documents. **CRITICAL FOR "HOW TO INFORM" QUESTIONS**: When providing guidance on how to communicate with clients about compliance issues (especially licensing violations, unlicensed nodes, or exceeding licensed quantities):
+        * **MANDATORY: ALWAYS reference Section 2.1 and Section 4.4** when the issue involves licensing compliance. These are the key sections: Section 2.1 (licensing requirements) and Section 4.4 (reporting obligations). You MUST cite both sections with their exact quotes in your guidance.
+        * **Address the specific issue** mentioned in the conversation context (e.g., if the conversation was about an unlicensed arbitrator node, structure your guidance around that specific issue - mention the arbitrator node, reference Section 2.1 about all nodes needing to be licensed, and Section 4.4 about reporting obligations).
+        * **Provide a clear structure** for client communications: (1) State the issue clearly (e.g., "unlicensed arbitrator node"), (2) Reference Section 2.1 with the quote about all Servers/Cores/vCPUs must be licensed, (3) Reference Section 4.4 with the quote about reporting obligations, (4) Explain what needs to be done (license the node and report it), (5) Provide practical email template or talking points.
+        * **Be practical and helpful** - provide email templates, talking points, or structured guidance that helps the user communicate effectively with their client. The email/talking points should reference the specific sections (2.1 and 4.4) and address the specific compliance issue.
+        * **DO NOT provide generic advice** - tailor your guidance to the specific compliance issue (e.g., unlicensed arbitrator node) and always reference the relevant sections (Section 2.1 and Section 4.4).
+        * If asked "how can I tell the customer about this?" or "how can I inform the client" or "how can I advise", structure your response to help them communicate the specific compliance issue, citing Section 2.1 (licensing requirements) and Section 4.4 (reporting obligations) with their exact quotes.
+        * If asked "what should the customer do?", reference the requirements and obligations stated in the relevant sections (Section 2.1 and Section 4.4).
         * Provide actionable guidance based on what the documents say, even if there isn't a specific "how-to" section.
       - You can provide guidance, recommendations, and practical advice based on the legal requirements stated in the documents. You don't need an exact match - you can infer appropriate guidance from the relevant sections.
+      - **MANDATORY FOR 100% MATCH SECTIONS**: If ANY section has a 100% similarity score, you MUST extract and use information from it. A 100% match means the vector search found a perfect semantic match - the section directly answers the question. Read the entire section content and extract all relevant information.
       - IMPORTANT: If sections are provided with high similarity scores (especially 90%+ or 100%), they ARE relevant and you MUST use them to answer the question. Do not ignore sections just because they don't contain the exact words from the question - extract and use the relevant information they contain.
       - When sections are provided with high similarity scores, extract the relevant information and answer the question based on that information. Even if the wording isn't identical, the information is relevant.
-      - ONLY if ALL provided sections contain absolutely NO information that could even tangentially relate to the question after careful analysis, then say: "I don't have that information in the legal documents. Please consult with a legal professional or refer to the complete document."
+      - **BEFORE saying "I don't have that information"**: You MUST check ALL sections, especially those with 90%+ or 100% similarity scores. Read the full content of high-relevance sections, not just the titles. Extract information even if it requires interpretation or inference from the content.
+      - ONLY if ALL provided sections contain absolutely NO information that could even tangentially relate to the question after carefully reading ALL sections (especially 100% match sections), then say: "I don't have that information in the legal documents. Please consult with a legal professional or refer to the complete document."
       `}
       - Use markdown formatting for better readability.
       - Format quotes using blockquotes (> ) or quotation marks for emphasis.
+      - **AVOID REPETITION**: Do not repeat the same information, conclusion, or quote multiple times. Structure your answer as: (1) Direct answer to the question, (2) Citation of relevant section(s) with quote(s), (3) Brief summary if needed. Keep it concise and avoid redundant paragraphs.
 
       Answer as markdown (be helpful, accurate, and precise):
     `
