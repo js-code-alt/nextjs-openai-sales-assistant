@@ -391,7 +391,7 @@ export function SettingsManager() {
                       id="product-name"
                       value={productName}
                       onChange={(e) => setProductName(e.target.value)}
-                      placeholder="e.g., MariaDB SkySQL, MariaDB Enterprise Server"
+                      placeholder="e.g., MariaDB Cloud, MariaDB Enterprise Server"
                       disabled={uploadingProduct}
                     />
                   </div>
