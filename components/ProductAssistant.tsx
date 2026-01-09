@@ -134,6 +134,7 @@ export function ProductAssistant() {
   const [currentQuery, setCurrentQuery] = React.useState<string>('')
   const [suggestedQuestions, setSuggestedQuestions] = React.useState<string[]>([])
   const [isLoadingSuggestions, setIsLoadingSuggestions] = React.useState(false)
+  const hasFetchedInitialSuggestions = React.useRef(false)
 
   const { complete, completion, isLoading, error } = useCompletion({
     api: '/api/vector-search',
@@ -163,9 +164,10 @@ export function ProductAssistant() {
     },
   })
 
-  // Fetch suggested questions when component mounts and there's no chat history
+  // Fetch suggested questions once when component mounts and there's no chat history
   React.useEffect(() => {
-    if (chatHistory.length === 0 && !isLoading && !isLoadingSuggestions) {
+    if (!hasFetchedInitialSuggestions.current && chatHistory.length === 0 && !isLoadingSuggestions) {
+      hasFetchedInitialSuggestions.current = true
       setIsLoadingSuggestions(true)
       fetch('/api/suggested-questions?type=product')
         .then((res) => res.json())
@@ -185,7 +187,7 @@ export function ProductAssistant() {
           setIsLoadingSuggestions(false)
         })
     }
-  }, [chatHistory.length, isLoading])
+  }, [chatHistory.length, isLoadingSuggestions])
 
   const handleSubmit: React.FormEventHandler<HTMLFormElement> = (e) => {
     e.preventDefault()
@@ -219,6 +221,7 @@ export function ProductAssistant() {
     setCurrentQuery('')
     setSuggestedQuestions([])
     setIsSubmitting(false)
+    hasFetchedInitialSuggestions.current = false
   }
 
   const allHistory = React.useMemo(() => {
