@@ -114,9 +114,40 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
       }
     } else {
       // Handle JSON request (text-only)
-      const body = typeof req.body === 'string' ? JSON.parse(req.body) : req.body
-      name = body.name
-      content = body.content
+      // Since bodyParser is disabled, we need to manually read and parse the body
+      let body: any
+      
+      if (Buffer.isBuffer(req.body)) {
+        // If body is a Buffer, parse it as JSON string
+        body = JSON.parse(req.body.toString('utf-8'))
+      } else if (typeof req.body === 'string') {
+        body = JSON.parse(req.body)
+      } else if (req.body && typeof req.body === 'object' && req.body.name) {
+        // Already parsed object
+        body = req.body
+      } else {
+        // Body parser is disabled, so we need to read the stream manually
+        const chunks: Buffer[] = []
+        body = await new Promise((resolve, reject) => {
+          req.on('data', (chunk: Buffer) => {
+            chunks.push(chunk)
+          })
+          req.on('end', () => {
+            try {
+              const bodyString = Buffer.concat(chunks).toString('utf-8')
+              resolve(JSON.parse(bodyString))
+            } catch (err) {
+              reject(new UserError('Invalid JSON in request body'))
+            }
+          })
+          req.on('error', (err) => {
+            reject(new UserError(`Error reading request body: ${err.message}`))
+          })
+        })
+      }
+      
+      name = body?.name
+      content = body?.content
     }
 
     if (!name || !content) {

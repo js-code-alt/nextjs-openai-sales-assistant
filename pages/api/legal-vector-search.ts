@@ -96,6 +96,28 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
     // Convert embedding array to MariaDB VECTOR format string
     const embeddingVectorString = arrayToVectorString(embedding)
 
+    // Extract document name keywords from query to boost matching documents
+    // This helps prioritize documents that match the query's intent (e.g., "BSL" query should prioritize BSL license document)
+    const queryLower = sanitizedQuery.toLowerCase()
+    const documentKeywords: string[] = []
+    
+    // Detect specific documents mentioned in query
+    if (/(?:^|\s)(?:bsl|business\s+source\s+license|business\s+source)(?:\s|$)/i.test(queryLower)) {
+      documentKeywords.push('bsl', 'business source', 'business source license')
+    }
+    if (/(?:^|\s)(?:subscription\s+agreement|subscription)(?:\s|$)/i.test(queryLower)) {
+      documentKeywords.push('subscription agreement', 'subscription')
+    }
+    if (/(?:^|\s)(?:maxscale|max\s+scale)(?:\s|$)/i.test(queryLower)) {
+      documentKeywords.push('maxscale')
+    }
+    if (/(?:^|\s)(?:privacy\s+policy|privacy)(?:\s|$)/i.test(queryLower)) {
+      documentKeywords.push('privacy', 'privacy policy')
+    }
+    if (/(?:^|\s)(?:terms\s+of\s+service|terms\s+and\s+conditions|terms)(?:\s|$)/i.test(queryLower)) {
+      documentKeywords.push('terms', 'terms of service')
+    }
+    
     // Use MariaDB native vector functions for similarity search on legal sections
     // Optimized query: Use CTE to compute Vec_FromText once and reuse it
     // Since the index is configured with DISTANCE=cosine, VEC_DISTANCE() will use cosine distance
@@ -122,6 +144,42 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
       LIMIT ?`,
       [embeddingVectorString, minContentLength, matchThreshold, matchCount]
     )
+
+    let legalSections = legalSectionRows as Array<{
+      id: number
+      legal_id: number
+      section_title: string | null
+      content: string | null
+      document_name: string
+      similarity: number
+    }>
+
+    // Boost sections from documents whose names match query keywords
+    // This ensures that queries about "BSL" prioritize BSL license document sections
+    if (documentKeywords.length > 0) {
+      legalSections = legalSections.map(section => {
+        const docNameLower = section.document_name.toLowerCase()
+        let boostedSimilarity = section.similarity
+        
+        // Check if document name contains any of the detected keywords
+        for (const keyword of documentKeywords) {
+          if (docNameLower.includes(keyword.toLowerCase())) {
+            // Apply boost based on keyword specificity
+            const boost = keyword.length > 10 ? 1.25 : keyword.length > 5 ? 1.20 : 1.15
+            boostedSimilarity = Math.min(1.0, section.similarity * boost)
+            break // Use the first match (most specific should be checked first)
+          }
+        }
+        
+        return {
+          ...section,
+          similarity: boostedSimilarity
+        }
+      })
+      
+      // Re-sort by boosted similarity (highest first)
+      legalSections.sort((a, b) => b.similarity - a.similarity)
+    }
 
     // Check if query is about licensing/compliance - if so, also do keyword search
     const isLicensingQuery = /(license|licensed|unlicensed|node|server|core|vCPU|violat|complian|over.?usage|exceed|community|enterprise|production|environment|use|using)/i.test(sanitizedQuery)
@@ -185,15 +243,6 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
       }>
     }
 
-    let legalSections = legalSectionRows as Array<{
-      id: number
-      legal_id: number
-      section_title: string | null
-      content: string | null
-      document_name: string
-      similarity: number
-    }>
-
     // Merge keyword-boosted sections with vector search results, avoiding duplicates
     if (keywordBoostedSections.length > 0) {
       const existingIds = new Set(legalSections.map(s => s.id))
@@ -236,7 +285,9 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
       }
 
       // Format section with clear numbering - include section title which should contain section number
-      contextText += `[DOCUMENT: ${documentName}]\nSECTION: ${sectionTitle}\n\n${content.trim()}\n\n---\n\n`
+      // Include similarity score to indicate relevance (higher = more relevant)
+      const similarityPercent = Math.round(legalSection.similarity * 100)
+      contextText += `[DOCUMENT: ${documentName}] (Relevance: ${similarityPercent}%)\nSECTION: ${sectionTitle}\n\n${content.trim()}\n\n---\n\n`
     }
 
     // Check if this is an introductory question
@@ -267,18 +318,26 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
 
       ${contextText ? `Legal Document Information:
       
-      The sections below are ordered by relevance to your question (most relevant first, typically with highest similarity scores). These sections have been identified as relevant to your question. USE THIS INFORMATION to answer the question.
+      The sections below are ordered by relevance to your question (most relevant first, typically with highest similarity scores). These sections have been identified as relevant to your question and ARE AVAILABLE for you to use. 
+      
+      CRITICAL: These sections contain information that can answer the question. Sections with very high similarity scores (90%+, especially 100%) are HIGHLY RELEVANT and you MUST extract and use information from them to answer the question. Do not say "I don't have that information" if these sections are provided - they ARE the information.
       
       CRITICAL INSTRUCTIONS FOR FINDING RELEVANT SECTIONS:
-      1. Review ALL sections below - do not just look at the first few. Scan through ALL of them.
-      2. Look for sections that contain these EXACT phrases or keywords:
+      1. **RELEVANCE SCORES (CRITICAL)**: Each section below includes a relevance score (percentage). Sections with 90%+ relevance (especially 100%) are HIGHLY RELEVANT and you MUST extract information from them to answer the question. These sections were identified as directly relevant to your question.
+      2. Review ALL sections below - do not just look at the first few. Scan through ALL of them, but prioritize sections with higher relevance scores.
+      3. **DOCUMENT NAME MATCHING (CRITICAL)**: If the question mentions a specific document type or name (e.g., "BSL", "Business Source License", "Subscription Agreement", "MaxScale", "Privacy Policy", "Terms of Service"), you MUST prioritize sections from documents whose names match that topic. For example:
+         - Questions about "BSL" or "Business Source License" should prioritize sections from documents named "BSL License", "Business Source License", etc.
+         - Questions about "Subscription Agreement" should prioritize sections from documents named "Subscription Agreement" or "MariaDB Subscription Agreement"
+         - Questions about "MaxScale" should prioritize sections from documents about MaxScale
+      4. Look for sections that contain these EXACT phrases or keywords:
          - "must be licensed" OR "licensed and subscribed" OR "all Servers" OR "all Cores" OR "all vCPUs"
          - "all environments" OR "production, test, development, disaster recovery"
          - "Scope" (especially Section 2.x which often covers licensing requirements)
          - "reporting" OR "notify" OR "over-usage" OR "exceeding quantity" (especially Section 4.x which often covers fees and reporting)
-      3. Section numbering conventions: Section 2.x typically covers Scope and licensing requirements. Section 4.x typically covers Fees, Payments, and Reporting obligations.
-      4. If you find sections containing the keywords above, they are HIGHLY RELEVANT even if they appear later in the list.
-      5. Prioritize sections that directly state requirements (e.g., "must be", "shall", "required") over sections that are more general.
+      5. Section numbering conventions: Section 2.x typically covers Scope and licensing requirements. Section 4.x typically covers Fees, Payments, and Reporting obligations.
+      6. If you find sections containing the keywords above, they are HIGHLY RELEVANT even if they appear later in the list.
+      7. Prioritize sections that directly state requirements (e.g., "must be", "shall", "required") over sections that are more general.
+      8. **DO NOT cite sections from the wrong document**. For example, if the question is about "BSL license", do NOT cite sections from "Subscription Agreement" documents unless they directly mention BSL licensing.
       
       ${sectionList.length > 0 ? `\nAvailable sections in context (for reference - check ALL of them):\n${sectionList.map(s => `- ${s.sectionNum ? `Section ${s.sectionNum}` : s.title} (similarity: ${Math.round(s.similarity * 100)}%)`).join('\n')}\n\n` : ''}
       
@@ -293,6 +352,10 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
       - If asked "how can you help", "what can you help with", "what can you do", "how can i help", "what do you do", "tell me about yourself", or similar introductory questions, respond by introducing yourself: "I'm the Legal Document Assistant. I can help you with all legal documentation including terms and conditions, privacy policies, contracts, and other legal documents. I can help you understand legal terms, check if customers are compliant with specific requirements, find relevant clauses and sections, and answer general legal questions based on your uploaded documents."
       ` : `
       - Answer based on the information provided in the legal documents above. The sections provided have been identified as relevant to your question.
+      - CRITICAL - DOCUMENT MATCHING: If the question mentions a specific document type (e.g., "BSL", "Business Source License", "Subscription Agreement", "MaxScale", "Privacy Policy", "Terms of Service"), you MUST prioritize and cite sections from documents whose names match that document type. For example:
+        * If asked about "BSL" or "Business Source License", cite sections from the BSL/Business Source License document, NOT from Subscription Agreement
+        * If asked about "Subscription Agreement", cite sections from the Subscription Agreement document
+        * If asked about "MaxScale", cite sections from MaxScale-related documents
       - CRITICAL: Review ALL sections provided and identify which sections MOST DIRECTLY answer the question. Look for sections that contain keywords and phrases from the question. For example:
         * If the question mentions "nodes", "servers", "licensing", "not under license", "unlicensed", "Community", "Enterprise", "use", "using", "production" → Look for sections about licensing requirements, "must be licensed", "all Servers", "Scope", "Scope of Services", "licensing requirements", "use with the Software"
         * If the question mentions "violating", "compliance", "over-usage" → Look for sections about requirements, restrictions, reporting obligations, penalties
@@ -316,7 +379,9 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
         * If asked "what should the customer do?", reference the requirements and obligations stated in the relevant sections.
         * Provide actionable guidance based on what the documents say, even if there isn't a specific "how-to" section.
       - You can provide guidance, recommendations, and practical advice based on the legal requirements stated in the documents. You don't need an exact match - you can infer appropriate guidance from the relevant sections.
-      - ONLY if the provided sections contain NO information whatsoever that could answer the question (not even by reasonable inference or guidance), then say: "I don't have that information in the legal documents. Please consult with a legal professional or refer to the complete document."
+      - IMPORTANT: If sections are provided with high similarity scores (especially 90%+ or 100%), they ARE relevant and you MUST use them to answer the question. Do not ignore sections just because they don't contain the exact words from the question - extract and use the relevant information they contain.
+      - When sections are provided with high similarity scores, extract the relevant information and answer the question based on that information. Even if the wording isn't identical, the information is relevant.
+      - ONLY if ALL provided sections contain absolutely NO information that could even tangentially relate to the question after careful analysis, then say: "I don't have that information in the legal documents. Please consult with a legal professional or refer to the complete document."
       `}
       - Use markdown formatting for better readability.
       - Format quotes using blockquotes (> ) or quotation marks for emphasis.
