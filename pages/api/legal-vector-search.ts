@@ -50,11 +50,14 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
       throw new UserError('Missing request data')
     }
 
-    const { prompt: query } = requestData
+    const { prompt: query, chatHistory } = requestData
 
     if (!query) {
       throw new UserError('Missing query in request data')
     }
+    
+    // Extract conversation history for context (array of {query, response} objects)
+    const conversationHistory = Array.isArray(chatHistory) ? chatHistory : []
 
     const pool = getDbPool()
 
@@ -189,6 +192,9 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
     
     // Check if query is asking how to inform/communicate with clients
     const isHowToInformQuery = /(how.*inform|how.*tell|how.*communicate|how.*email|how.*discuss|how.*advise|how.*explain|advise.*how|suggest.*email|email.*template|how.*write)/i.test(sanitizedQuery)
+    
+    // Check if query is asking to generate/write an email (more specific than just "how to")
+    const isGenerateEmailQuery = /(generate.*email|write.*email|create.*email|draft.*email|email.*that|email.*explain|email.*communicate|email.*to.*customer|email.*to.*client)/i.test(sanitizedQuery)
     
     let keywordBoostedSections: Array<{
       id: number
@@ -380,6 +386,51 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
       ${sanitizedQuery}
       """
 
+      ${isGenerateEmailQuery ? `
+      **CRITICAL: EMAIL GENERATION REQUEST DETECTED**
+      
+      The user is asking you to GENERATE/WRITE/CREATE/DRAFT an email. You MUST write a COMPLETE, READY-TO-USE email - NOT just explain what should be in it.
+      
+      ${conversationHistory.length > 0 ? `
+      **CONVERSATION CONTEXT (CRITICAL - USE THIS INFORMATION IN THE EMAIL):**
+      
+      The following is the conversation history that provides context about the specific compliance issue. You MUST incorporate these specific details into the email:
+      
+      ${conversationHistory.map((msg: { query: string; response: string }, idx: number) => {
+        const query = msg.query || ''
+        // Include the full user query as it contains the key details
+        return `Previous Question ${idx + 1}: ${query}`
+      }).join('\n')}
+      
+      **IMPORTANT**: The email MUST reference the SPECIFIC compliance issue mentioned in the conversation above. Extract and include:
+      - The specific type of node/component mentioned (e.g., "arbitrator node")
+      - Whether it's "not under license", "unlicensed", or "not licensed"
+      - The number of nodes in the subscription (e.g., "3 nodes", "active subscription of 3 nodes")
+      - The environment (e.g., "in production")
+      - The subscription type (e.g., "MariaDB Enterprise subscription")
+      - Any other specific details about the client's situation
+      
+      For example, if the conversation mentions "I have a client with an existing MariaDB Enterprise subscription in production, I found out that they have an arbitrator node that is not under license", the email MUST state something like: "You have an active MariaDB Enterprise subscription for [X] nodes in production, but we have identified an additional arbitrator node that is not under license."
+      
+      ` : ''}
+      
+      Your response MUST be a complete email with:
+      1. **Subject line** (format as: "Subject: [subject text]")
+      2. **Greeting** (e.g., "Dear [Client Name]," or "Dear Customer,")
+      3. **Body paragraphs** that:
+         - Clearly state the SPECIFIC compliance issue from the conversation context (e.g., "You have an active subscription for 3 nodes, but we have identified an additional arbitrator node in production that is not under license")
+         - Reference Section 2.1 with the exact quote about licensing requirements (all Servers/Cores/vCPUs must be licensed)
+         - Reference Section 4.4 with the exact quote about reporting obligations (must promptly notify MariaDB if usage exceeds licensed quantities)
+         - Explain what the client needs to do (license the node, report it, etc.)
+         - Be professional, clear, and actionable
+      4. **Closing** (e.g., "Best regards," or "Sincerely,")
+      5. **Signature placeholder** (e.g., "[Your Name]" or leave blank)
+      
+      The email should be professional, ready to send (you may use placeholders like "[Client Name]" if needed), and MUST address the SPECIFIC compliance issue mentioned in the conversation context above.
+      
+      DO NOT write explanations about what should be in the email. WRITE THE ACTUAL EMAIL TEXT.
+      
+      ` : ''}
       Important: 
       ${isIntroductoryQuestion || !contextText ? `
       - If asked "how can you help", "what can you help with", "what can you do", "how can i help", "what do you do", "tell me about yourself", or similar introductory questions, respond by introducing yourself: "I'm the Legal Document Assistant. I can help you with all legal documentation including terms and conditions, privacy policies, contracts, and other legal documents. I can help you understand legal terms, check if customers are compliant with specific requirements, find relevant clauses and sections, and answer general legal questions based on your uploaded documents."
@@ -411,6 +462,15 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
       - If you see sections with these keywords, they are REQUIRED citations - do not skip them even if they appear later in the list.
       - Do NOT cite sections that are tangentially related or generic boilerplate like "Entire Agreement", "Non-Solicitation", "Force Majeure", "Assignment", "Notices", etc. unless they specifically relate to the question.
       - If the question is about compliance or whether something violates terms, identify ALL relevant sections that address the specific issue, analyze them comprehensively, and cite each one with quotes. Provide a complete answer covering all relevant requirements.
+      - **CRITICAL FOR EMAIL GENERATION REQUESTS**: If the question asks to "generate an email", "write an email", "create an email", "draft an email", or "email that explains", you MUST write a COMPLETE, READY-TO-USE email. Do NOT just explain what should be in the email - actually write the full email text. The email must include:
+        * A clear subject line (format as "Subject: [subject text]")
+        * A professional greeting (e.g., "Dear [Client Name]," or "Dear Customer,")
+        * A clear body that explains the legal issue, cites relevant sections (especially Section 2.1 and Section 4.4 for licensing issues), and provides actionable guidance
+        * A professional closing (e.g., "Best regards," or "Sincerely,")
+        * The email should be professional, clear, and ready to send (you may use placeholders like "[Client Name]" if needed)
+        * Reference the specific compliance issue from the conversation context (e.g., if it was about an unlicensed arbitrator node, mention that specifically)
+        * Include direct quotes from relevant sections (Section 2.1 for licensing requirements, Section 4.4 for reporting obligations)
+        * Make the email practical and actionable - tell the client what they need to do
       - For questions asking "how to" or "what should I do" or "how can I tell/explain" or "how can I inform/communicate" or "how can I advise", provide practical, actionable guidance based on the legal requirements in the documents. **CRITICAL FOR "HOW TO INFORM" QUESTIONS**: When providing guidance on how to communicate with clients about compliance issues (especially licensing violations, unlicensed nodes, or exceeding licensed quantities):
         * **MANDATORY: ALWAYS reference Section 2.1 and Section 4.4** when the issue involves licensing compliance. These are the key sections: Section 2.1 (licensing requirements) and Section 4.4 (reporting obligations). You MUST cite both sections with their exact quotes in your guidance.
         * **Address the specific issue** mentioned in the conversation context (e.g., if the conversation was about an unlicensed arbitrator node, structure your guidance around that specific issue - mention the arbitrator node, reference Section 2.1 about all nodes needing to be licensed, and Section 4.4 about reporting obligations).
@@ -442,7 +502,7 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
     const response = await openai.createChatCompletion({
       model: 'gpt-3.5-turbo',
       messages: [chatMessage],
-      max_tokens: 512,
+      max_tokens: isGenerateEmailQuery ? 1500 : 512, // More tokens for email generation
       temperature: 0,
       stream: true,
     })
