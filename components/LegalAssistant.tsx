@@ -138,6 +138,12 @@ export function LegalAssistant() {
 
   const { complete, completion, isLoading, error } = useCompletion({
     api: '/api/legal-vector-search',
+    body: {
+      chatHistory: chatHistory.map(msg => ({
+        query: msg.query,
+        response: msg.response,
+      })),
+    },
     onFinish: (prompt, completion) => {
       // Parse sources from completion
       const sourcesMatch = completion.match(/__SOURCES__:(.+)$/s)
