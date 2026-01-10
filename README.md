@@ -47,7 +47,7 @@ graph TB
         A[📄 Knowledge Base Documents<br/>MDX/Markdown Files] --> B[🔪 Chunk into Sections<br/>By Headings]
         B --> C[🧠 OpenAI Embedding API<br/>text-embedding-ada-002]
         C --> D[📊 1536-dim Vector<br/>0.123, -0.456, 0.789, ...]
-        D --> E[💾 MariaDB Cloud<br/>VECTOR(1536) Type]
+        D --> E[💾 MariaDB Cloud<br/>VECTOR Type 1536-dim]
         E --> F[⚡ Vector Index<br/>DISTANCE=cosine, M=16]
         F --> G[(🗄️ Indexed Knowledge Base<br/>Fast Similarity Search)]
     end
