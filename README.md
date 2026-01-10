@@ -2,6 +2,20 @@
 
 An intelligent sales assistant application built with Next.js, OpenAI API, and MariaDB Cloud. This application demonstrates how to build a production-ready AI-powered knowledge base that combines the semantic search capabilities of vector embeddings with the natural language generation of Large Language Models.
 
+## 🏗️ Two-Phase AI Architecture
+
+> ⚡ **This project implements a production-ready two-phase AI architecture** combining OpenAI's Embedding & Chat APIs with MariaDB Cloud's native vector search capabilities.
+
+### Quick Overview
+
+| Phase | When | What It Does |
+|-------|------|--------------|
+| **Phase 1: Indexing** | Build Time | Converts documents → Embeddings → Stored in MariaDB with vector indexes |
+| **Phase 2: Query** | Runtime | User question → Vector search → Context retrieval → AI-generated response |
+
+📖 **[View Complete Architecture Documentation →](./ARCHITECTURE.md)**  
+The architecture documentation includes detailed diagrams, data flows, component interactions, and design decisions.
+
 ## 🎯 Overview
 
 This application helps sales professionals by providing AI-powered answers grounded in product documentation, legal documents, and go-to-market materials. At its core, it uses a two-phase AI architecture:
@@ -10,6 +24,8 @@ This application helps sales professionals by providing AI-powered answers groun
 2. **Query Phase**: Uses vector similarity search to find relevant context, then generates natural language responses using OpenAI's Chat Completion API
 
 ## 🧠 How the AI Architecture Works
+
+> 📖 **For a comprehensive architecture deep-dive with detailed diagrams, see [ARCHITECTURE.md](./ARCHITECTURE.md)**
 
 ### The Core Problem
 
@@ -27,24 +43,41 @@ Our solution combines:
 
 ```mermaid
 graph TB
-    subgraph "Phase 1: Indexing (Build Time)"
-        A[Knowledge Base Documents] --> B[Chunk into Sections]
-        B --> C[OpenAI Embedding API<br/>text-embedding-ada-002]
-        C --> D[1536-dim Vector]
-        D --> E[MariaDB Cloud<br/>VECTOR Type Storage]
-        E --> F[Vector Index<br/>DISTANCE=cosine]
+    subgraph "PHASE 1: Indexing (Build Time) 📚"
+        A[📄 Knowledge Base Documents<br/>MDX/Markdown Files] --> B[🔪 Chunk into Sections<br/>By Headings]
+        B --> C[🧠 OpenAI Embedding API<br/>text-embedding-ada-002]
+        C --> D[📊 1536-dim Vector<br/>[0.123, -0.456, 0.789, ...]]
+        D --> E[💾 MariaDB Cloud<br/>VECTOR(1536) Type]
+        E --> F[⚡ Vector Index<br/>DISTANCE=cosine, M=16]
+        F --> G[(🗄️ Indexed Knowledge Base<br/>Fast Similarity Search)]
     end
     
-    subgraph "Phase 2: Query (Runtime)"
-        G[User Question] --> H[OpenAI Embedding API]
-        H --> I[Query Vector]
-        I --> J[MariaDB Vector Search<br/>VEC_DISTANCE Function]
-        J --> K[Top Relevant Sections]
-        K --> L[Build Context Prompt]
-        L --> M[OpenAI Chat API<br/>gpt-3.5-turbo]
-        M --> N[Streamed Response]
+    subgraph "PHASE 2: Query (Runtime) ⚡"
+        H[👤 User Question] --> I[🛡️ Content Moderation<br/>Parallel Check]
+        H --> J[🧠 OpenAI Embedding API<br/>text-embedding-ada-002]
+        I --> K{✅ Approved?}
+        K -->|❌ No| L[🚫 Reject Request]
+        K -->|✅ Yes| J
+        J --> M[📊 Query Vector<br/>1536-dim]
+        M --> N[🔍 MariaDB Vector Search<br/>VEC_DISTANCE Function]
+        N --> G
+        G --> O[📋 Top 10 Relevant Sections<br/>Similarity > 0.78]
+        O --> P[📝 Build Context Prompt<br/>~1500 tokens max]
+        P --> Q[🤖 OpenAI Chat API<br/>gpt-3.5-turbo]
+        Q --> R[📡 Streamed Response<br/>SSE to Frontend]
     end
+    
+    style A fill:#e1f5ff
+    style G fill:#d4edda
+    style Q fill:#fff3cd
+    style R fill:#f8d7da
 ```
+
+**Key Features:**
+- ✅ **Phase 1** (Indexing): Runs once during build/deployment, creates searchable vector database
+- ✅ **Phase 2** (Query): Runs per user request, leverages pre-indexed vectors for fast semantic search
+- ✅ **Cost-Effective**: Only uses expensive Chat API with small, highly-relevant context
+- ✅ **Scalable**: Vector indexes enable sub-second searches even with millions of documents
 
 ## 🤝 How MariaDB Cloud Complements OpenAI API
 
@@ -413,6 +446,15 @@ This makes MariaDB Cloud an ideal complement to OpenAI's API for building produc
 
 ## 📖 Learn More
 
+### Architecture Documentation
+- **[ARCHITECTURE.md](./ARCHITECTURE.md)** - Comprehensive architecture deep-dive with detailed diagrams
+  - Data flow diagrams for both phases
+  - Component architecture visualization
+  - Database schema diagrams
+  - Performance characteristics
+  - Security and validation flows
+
+### External Resources
 - [OpenAI Embeddings Documentation](https://platform.openai.com/docs/guides/embeddings)
 - [MariaDB Vector Functions](https://mariadb.com/docs/server/ref/mdb/sql-statements/data-types/vector/)
 - [Vector Search Best Practices](https://platform.openai.com/docs/guides/embeddings/use-cases)
