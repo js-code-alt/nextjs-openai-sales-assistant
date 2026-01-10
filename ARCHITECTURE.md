@@ -40,7 +40,7 @@ graph TB
     subgraph "PHASE 1: Indexing (Build Time) 📚"
         A[📄 Knowledge Base Documents<br/>MDX/Markdown Files] --> B[🔪 Chunk into Sections<br/>By Headings]
         B --> C[🧠 OpenAI Embedding API<br/>text-embedding-ada-002]
-        C --> D[📊 1536-dim Vector Array<br/>[0.123, -0.456, 0.789, ...]]
+        C --> D[📊 1536-dim Vector Array<br/>0.123, -0.456, 0.789, ...]
         D --> E[💾 MariaDB Cloud<br/>VECTOR(1536) Type]
         E --> F[⚡ Vector Index<br/>DISTANCE=cosine, M=16]
         F --> G[(🗄️ Indexed Knowledge Base<br/>Fast Similarity Search)]
@@ -284,7 +284,7 @@ graph TD
     A[User Query:<br/>'How to optimize performance?'] --> B[1. Generate Embedding]
     B --> C[Vector: 0.123, -0.456, ...<br/>1536 dimensions]
     C --> D[2. Convert to MariaDB Format]
-    D --> E['[0.123,-0.456,0.789,...]']
+    D --> E[MariaDB Format:<br/>0.123,-0.456,0.789,...]
     E --> F[3. Execute Vector Search Query]
     
     F --> G[WITH query_vector AS<br/>SELECT Vec_FromText? AS vec]
