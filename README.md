@@ -1,6 +1,6 @@
 # Ai Sales Assistant - AI-Powered Knowledge Base
 
-An intelligent sales assistant application built with Next.js, OpenAI API, and MariaDB Cloud. This application demonstrates how to build a production-ready AI-powered knowledge base that combines the semantic search capabilities of vector embeddings with the natural language generation of Large Language Models.
+An intelligent sales assistant application built with Next.js, OpenAI API, and MariaDB Cloud. This application demonstrates how to build a AI-powered knowledge base that combines the semantic search capabilities of vector embeddings with the natural language generation of Large Language Models.
 
 ## 🏗️ Two-Phase AI Architecture
 
