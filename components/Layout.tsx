@@ -14,6 +14,7 @@ export function Layout({ children }: LayoutProps) {
   const navItems = [
     { href: '/product', label: 'Product' },
     { href: '/legal', label: 'Legal' },
+    { href: '/gtm', label: 'GTM - Go-to-market' },
     { href: '/settings', label: 'Settings' },
   ]
 
